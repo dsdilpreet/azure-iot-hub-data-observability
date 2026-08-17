@@ -66,6 +66,7 @@ Notes:
 - AZURE_IOT_HUB_NAME must match the `{iothub}` segment used by the IoT Hub routing file format.
 - STATE_FILE_PATH is optional. If omitted, the script uses last_run_state.txt in repo root.
 
+
 ## Run the script
 
 From repo root:
