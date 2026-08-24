@@ -16,7 +16,8 @@
         "query": "SELECT DISTINCT connection_device_id FROM iot_messages WHERE connection_device_id IS NOT NULL ORDER BY 1",
         "refresh": 2,
         "sort": 1,
-        "includeAll": false,
+        "includeAll": true,
+        "allValue": "all",
         "multi": false,
         "current": {}
       }
@@ -27,7 +28,7 @@
       "id": 1,
       "title": "Total messages per device",
       "type": "piechart",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 0 },
       "datasource": { "type": "postgres", "uid": "timescaledb" },
       "targets": [
         {
@@ -41,14 +42,8 @@
           "id": "rowsToFields",
           "options": {
             "mappings": [
-              {
-                "fieldName": "device",
-                "handlerKey": "field.name"
-              },
-              {
-                "fieldName": "total_messages",
-                "handlerKey": "field.value"
-              }
+              { "fieldName": "device", "handlerKey": "field.name" },
+              { "fieldName": "total_messages", "handlerKey": "field.value" }
             ]
           }
         }
@@ -58,7 +53,7 @@
       "id": 2,
       "title": "Total messages by schema type",
       "type": "piechart",
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 9, "w": 7, "x": 8, "y": 0 },
       "datasource": { "type": "postgres", "uid": "timescaledb" },
       "targets": [
         {
@@ -72,69 +67,22 @@
           "id": "rowsToFields",
           "options": {
             "mappings": [
-              {
-                "fieldName": "schema",
-                "handlerKey": "field.name"
-              },
-              {
-                "fieldName": "total_messages",
-                "handlerKey": "field.value"
-              }
+              { "fieldName": "schema", "handlerKey": "field.name" },
+              { "fieldName": "total_messages", "handlerKey": "field.value" }
             ]
           }
         }
       ]
     },
     {
-        "id": 3,
-        "title": "Messages by schema type",
-        "type": "timeseries",
-        "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
-        "datasource": { "type": "postgres", "uid": "timescaledb" },
-        "fieldConfig": {
-            "defaults": {
-            "custom": {
-                "drawStyle": "bars",
-                "fillOpacity": 80,
-                "lineWidth": 0,
-                "barAlignment": 0,
-                "stacking": { "mode": "normal", "group": "A" }
-            }
-            },
-            "overrides": []
-        },
-        "maxDataPoints": 30,
-        "targets": [
-            {
-                "rawSql": "SELECT time_bucket('$__interval', enqueued_time) AS time, iothub_message_schema AS \"metric\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) GROUP BY 1, 2 ORDER BY 1",
-                "format": "time_series",
-                "refId": "A"
-            }
-        ]
-    },
-    {
-      "id": 4,
-      "title": "Total messages per device per schema type",
-      "type": "table",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
-      "datasource": { "type": "postgres", "uid": "timescaledb" },
-      "targets": [
-        {
-          "rawSql": "SELECT connection_device_id AS \"device\", iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) GROUP BY 1, 2 ORDER BY 3 DESC",
-          "format": "table",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "title": "Total messages per schema type for device $device",
+      "id": 3,
+      "title": "Total messages per schema type ($device)",
       "type": "piechart",
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 18 },
+      "gridPos": { "h": 9, "w": 9, "x": 15, "y": 0 },
       "datasource": { "type": "postgres", "uid": "timescaledb" },
       "targets": [
         {
-          "rawSql": "SELECT iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) AND connection_device_id = '$device' GROUP BY 1 ORDER BY 2 DESC",
+          "rawSql": "SELECT iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) AND ('$device' = 'all' OR connection_device_id = '$device') GROUP BY 1 ORDER BY 2 DESC",
           "format": "table",
           "refId": "A"
         }
@@ -144,15 +92,68 @@
           "id": "rowsToFields",
           "options": {
             "mappings": [
-              {
-                "fieldName": "schema",
-                "handlerKey": "field.name"
-              },
-              {
-                "fieldName": "total_messages",
-                "handlerKey": "field.value"
-              }
+              { "fieldName": "schema", "handlerKey": "field.name" },
+              { "fieldName": "total_messages", "handlerKey": "field.value" }
             ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Messages by schema type ($device)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "barAlignment": 0,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 30,
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('$__interval', enqueued_time) AS time, iothub_message_schema AS \"metric\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) AND ('$device' = 'all' OR connection_device_id = '$device') GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Total messages per device per schema type",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "rawSql": "SELECT connection_device_id AS \"device\", iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) GROUP BY 1, 2 ORDER BY 1, 2",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "rowField": "device",
+            "columnField": "schema",
+            "valueField": "total_messages"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reducer": "sum",
+            "alias": "total_messages"
           }
         }
       ]
