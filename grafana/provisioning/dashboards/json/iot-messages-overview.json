@@ -130,6 +130,17 @@
             "reducer": "sum",
             "alias": "total_messages"
           }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+              "sort": [
+              {
+                "field": "total_messages",
+                "desc": true
+              }
+            ]
+          }
         }
       ]
     }
