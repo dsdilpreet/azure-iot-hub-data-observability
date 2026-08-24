@@ -105,11 +105,11 @@
       "id": 4,
       "title": "Total messages per device per schema type",
       "type": "table",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 18 },
       "datasource": { "type": "postgres", "uid": "timescaledb" },
       "targets": [
         {
-          "rawSql": "SELECT connection_device_id AS \"device\", iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) GROUP BY 1, 2 ORDER BY 1, 2",
+          "rawSql": "SELECT connection_device_id AS \"device\", iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) GROUP BY 1, 2 ORDER BY 2 ASC, 1 ASC",
           "format": "table",
           "refId": "A"
         }
@@ -140,6 +140,18 @@
                 "desc": true
               }
             ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "device\\schema": "device"
+            },
+            "indexByName": {
+              "device\\schema": 0,
+              "total_messages": 1
+            }
           }
         }
       ]
