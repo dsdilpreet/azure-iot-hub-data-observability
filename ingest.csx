@@ -137,6 +137,7 @@ try
     // Discover partition folders (e.g. "{iotHubName}/00/", "{iotHubName}/01/") without listing every blob
     var partitionPrefixes = new List<string>();
     await foreach (var item in containerClient.GetBlobsByHierarchyAsync(delimiter: "/", prefix: $"{iotHubName}/")) // returns virtual folders (partitions) 
+    {
         if (item.IsPrefix)
         {
             partitionPrefixes.Add(item.Prefix); // adds unique folder paths (partitions) e.g. "{iotHubName}/00/", "{iotHubName}/01/"
