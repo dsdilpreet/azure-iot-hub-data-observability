@@ -75,11 +75,12 @@ try
         return;
     }
 
-    var maxBlobTime = lastRunTime;
-    var newCount = 0;
+    //var maxBlobTime = lastRunTime;
+    //var newCount = 0;
     var errorCount = 0;
     var insertedCount = 0;
     var dbErrorCount = 0;
+    var duplicateCount = 0;
 
     var dbConnectionString = new NpgsqlConnectionStringBuilder
     {
@@ -103,7 +104,9 @@ try
             connection_device_id,
             body,
             properties,
-            system_properties
+            system_properties,
+            source_blob,
+            source_line
         )
         VALUES (
             @enqueued_time,
@@ -112,8 +115,11 @@ try
             @connection_device_id,
             @body,
             @properties,
-            @system_properties
-        );";
+            @system_properties,
+            @source_blob,
+            @source_line
+        )
+        ON CONFLICT (source_blob, source_line, enqueued_time) DO NOTHING;";
 
     await using var insertCommand = new NpgsqlCommand(insertSql, dbConnection);
     insertCommand.Parameters.Add(new NpgsqlParameter("enqueued_time", NpgsqlDbType.TimestampTz));
@@ -123,118 +129,159 @@ try
     insertCommand.Parameters.Add(new NpgsqlParameter("body", NpgsqlDbType.Jsonb));
     insertCommand.Parameters.Add(new NpgsqlParameter("properties", NpgsqlDbType.Jsonb));
     insertCommand.Parameters.Add(new NpgsqlParameter("system_properties", NpgsqlDbType.Jsonb));
+    insertCommand.Parameters.Add(new NpgsqlParameter("source_blob", NpgsqlDbType.Text));
+    insertCommand.Parameters.Add(new NpgsqlParameter("source_line", NpgsqlDbType.Integer));
 
-    var blobs = containerClient.GetBlobsAsync(prefix: $"{iotHubName}/");
-    await foreach (var blob in blobs)
+    var pending = new List<(string Name, DateTime Time)>();
+
+    // Discover partition folders (e.g. "{iotHubName}/00/", "{iotHubName}/01/") without listing every blob
+    var partitionPrefixes = new List<string>();
+    await foreach (var item in containerClient.GetBlobsByHierarchyAsync(delimiter: "/", prefix: $"{iotHubName}/")) // returns virtual folders (partitions) 
+        if (item.IsPrefix)
+        {
+            partitionPrefixes.Add(item.Prefix); // adds unique folder paths (partitions) e.g. "{iotHubName}/00/", "{iotHubName}/01/"
+        }
+    }
+    Console.WriteLine($"Found {partitionPrefixes.Count} partition(s).");
+
+    var startDay = DateTime.SpecifyKind(lastRunTime.Date, DateTimeKind.Utc);
+    var endDay = DateTime.UtcNow.Date;
+
+    foreach (var partitionPrefix in partitionPrefixes)
     {
-        var success = false;
-
-        if (blob.Name.EndsWith('/'))
+        for (var day = startDay; day <= endDay; day = day.AddDays(1))
         {
-            continue;
-        }
+            // Only list this one day's folder: {iotHubName}/{partition}/{yyyy}/{MM}/{dd}/
+            var dayPrefix = $"{partitionPrefix}{day:yyyy}/{day:MM}/{day:dd}/";
 
-        var blobTime = ExtractDateTimeFromPath(blob.Name, iotHubName);
-        if (blobTime == DateTime.MinValue)
-        {
-            Console.WriteLine($"Could not get date from: {blob.Name}");
-            errorCount++;
-            continue;
-        }
+            await foreach (var blob in containerClient.GetBlobsAsync(prefix: dayPrefix))
+            {
+                if (blob.Name.EndsWith('/'))
+                {
+                    continue;
+                }
 
-        if (blobTime <= lastRunTime)
-        {
-            continue;
+                var blobTime = ExtractDateTimeFromPath(blob.Name, iotHubName);
+                if (blobTime == DateTime.MinValue)
+                {
+                    Console.WriteLine($"Could not get date from: {blob.Name}");
+                    errorCount++;
+                    continue;
+                }
+
+                // '<' not '<=': other partitions may still have unprocessed blobs in the checkpoint minute
+                if (blobTime < lastRunTime)
+                {
+                    continue;
+                }
+
+                pending.Add((blob.Name, blobTime));
+            }
         }
+    }
+
+    pending = pending.OrderBy(b => b.Time).ThenBy(b => b.Name, StringComparer.Ordinal).ToList();
+    Console.WriteLine($"{pending.Count} blob(s) to process.");
+
+    var checkpoint = lastRunTime;
+    var checkpointBlocked = false; // set when a blob fails, so we never skip past it
+
+    for (var i = 0; i < pending.Count; i++)
+    {
+        var (blobName, blobTime) = pending[i];
 
         try
         {
-            var blobClient = containerClient.GetBlobClient(blob.Name);
+            var blobClient = containerClient.GetBlobClient(blobName);
             var response = await blobClient.DownloadAsync();
 
             using var streamReader = new StreamReader(response.Value.Content);
             var content = await streamReader.ReadToEndAsync();
             var lines = content.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
 
-            foreach (var line in lines)
+            var blobInserted = 0;
+            var blobDuplicates = 0;
+
+            // One transaction per blob: a blob is either fully in the database or not at all
+            await using (var tx = await dbConnection.BeginTransactionAsync())
             {
-                try
+                insertCommand.Transaction = tx;
+
+                // foreach (var line in lines)
+                for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
                 {
-                    var message = JsonSerializer.Deserialize<IotHubMessage>(line);
+                    IotHubMessage? message;
+                    try
+                    {
+                        message = JsonSerializer.Deserialize<IotHubMessage>(lines[lineIndex]);
+                    }
+                    catch (JsonException ex)
+                    {
+                        Console.WriteLine($"Error deserializing line {lineIndex + 1} of {blobName}: {ex.Message}");
+                        errorCount++;
+                        continue;
+                    }
+
                     if (message is null)
                     {
                         continue;
                     }
 
-                    try
-                    {
-                        var enqueuedTime = DateTime.SpecifyKind(message.EnqueuedTimeUtc, DateTimeKind.Utc);
+                       
+                    var enqueuedTime = DateTime.SpecifyKind(message.EnqueuedTimeUtc, DateTimeKind.Utc);
 
-                        insertCommand.Parameters["enqueued_time"].Value = enqueuedTime;
-                        insertCommand.Parameters["iothub_creation_time"].Value = GetIotHubCreationTime(message) ?? (object)DBNull.Value;
-                        insertCommand.Parameters["iothub_message_schema"].Value = GetIotHubMessageSchema(message) ?? (object)DBNull.Value;
-                        insertCommand.Parameters["connection_device_id"].Value = GetConnectionDeviceId(message) ?? (object)DBNull.Value;
-                        insertCommand.Parameters["body"].Value = GetJsonOrDbNull(message.Body);
-                        insertCommand.Parameters["properties"].Value = GetJsonOrDbNull(message.Properties);
-                        insertCommand.Parameters["system_properties"].Value = GetJsonOrDbNull(message.SystemProperties);
+                    insertCommand.Parameters["enqueued_time"].Value = enqueuedTime;
+                    insertCommand.Parameters["iothub_creation_time"].Value = GetIotHubCreationTime(message) ?? (object)DBNull.Value;
+                    insertCommand.Parameters["iothub_message_schema"].Value = GetIotHubMessageSchema(message) ?? (object)DBNull.Value;
+                    insertCommand.Parameters["connection_device_id"].Value = GetConnectionDeviceId(message) ?? (object)DBNull.Value;
+                    insertCommand.Parameters["body"].Value = GetJsonOrDbNull(message.Body);
+                    insertCommand.Parameters["properties"].Value = GetJsonOrDbNull(message.Properties);
+                    insertCommand.Parameters["system_properties"].Value = GetJsonOrDbNull(message.SystemProperties);
+                    insertCommand.Parameters["source_blob"].Value = blobName;
+                    insertCommand.Parameters["source_line"].Value = lineIndex + 1;
 
-                        await insertCommand.ExecuteNonQueryAsync();
-                        insertedCount++;
-
-                        if (insertedCount % 500 == 0)
-                        {
-                            Console.WriteLine($"Progress: inserted {insertedCount} messages so far...");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error inserting message into database: {ex.Message}");
-                        dbErrorCount++;
-                        continue;
-                    }
-
-                    success = true;
-                    newCount++;
+                    var rows = await insertCommand.ExecuteNonQueryAsync();
+                    if (rows > 0) blobInserted++;
+                    else blobDuplicates++;
                 }
-                catch (JsonException ex)
-                {
-                    Console.WriteLine($"Error deserializing line: {ex.Message}");
-                    Console.WriteLine($"Line: {line}");
-                    errorCount++;
-                }
+
+                await tx.CommitAsync();
             }
+
+            insertedCount += blobInserted;
+            duplicateCount += blobDuplicates;
+            Console.WriteLine($"[{i + 1}/{pending.Count}] {blobName}: inserted {blobInserted}, already present {blobDuplicates}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error downloading blob {blob.Name}: {ex.Message}");
-            errorCount++;
+            // Freeze the checkpoint so this blob is retried
+            Console.WriteLine($"Error processing blob {blobName}: {ex.Message}");
+            dbErrorCount++;
+            checkpointBlocked = true;
+            continue;
         }
 
-        if (success && blobTime > maxBlobTime)
+        // Blob is committed. Everything earlier in time is done, so persist progress now.
+        if (!checkpointBlocked && blobTime > checkpoint)
         {
-            maxBlobTime = blobTime;
+            checkpoint = blobTime;
+            try
+            {
+                File.WriteAllText(stateFilePath, checkpoint.ToString("yyyy-MM-dd HH:mm:ss"));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating last run time: {ex.Message}");
+            }
         }
-    }
-
-    try
-    {
-        if (maxBlobTime > lastRunTime)
-        {
-            Console.WriteLine($"\nUpdating last run time to: {maxBlobTime:yyyy-MM-dd HH:mm:ss}");
-            File.WriteAllText(stateFilePath, maxBlobTime.ToString("yyyy-MM-dd HH:mm:ss"));
-        }
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"Error updating last run time: {ex.Message}");
     }
 
     Console.WriteLine("\n=== Summary ===");
-    Console.WriteLine($"Retrieved: {newCount} message(s)");
     Console.WriteLine($"Inserted: {insertedCount} message(s)");
-    Console.WriteLine($"Database errors: {dbErrorCount}");
-    Console.WriteLine($"Errors: {errorCount}");
-    Console.WriteLine($"Most recent blob: {maxBlobTime:yyyy-MM-dd HH:mm:ss} UTC");
+    Console.WriteLine($"Skipped: {duplicateCount} message(s)");
+    Console.WriteLine($"Blob/database errors: {dbErrorCount}");
+    Console.WriteLine($"Other errors: {errorCount}");
+    Console.WriteLine($"Checkpoint: {checkpoint:yyyy-MM-dd HH:mm:ss} UTC{(checkpointBlocked ? " (held back by a failed blob)" : "")}");
     Console.WriteLine($"\nCompleted at {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
 }
 catch (Exception ex)
@@ -249,7 +296,7 @@ static DateTime GetLastRunTime(string path)
     {
         try
         {
-            var content = File.ReadAllText(path);
+            var content = File.ReadAllText(path).Trim();
             return DateTime.ParseExact(content, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         }
         catch (Exception ex)
