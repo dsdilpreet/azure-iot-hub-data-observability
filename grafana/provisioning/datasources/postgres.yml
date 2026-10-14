@@ -6,11 +6,11 @@ datasources:
     type: postgres
     access: proxy
     url: timescaledb:5432
-    database: ${POSTGRES_DB}
     user: ${POSTGRES_USER}
     isDefault: true
     editable: true
     jsonData:
+      database: ${POSTGRES_DB}
       sslmode: disable
       postgresVersion: 1800
       timescaledb: true
