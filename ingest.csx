@@ -133,31 +133,51 @@ try
     insertCommand.Parameters.Add(new NpgsqlParameter("source_line", NpgsqlDbType.Integer));
 
     var pending = new List<(string Name, DateTime Time)>();
-    var blobs = containerClient.GetBlobsAsync(prefix: $"{iotHubName}/");
-    await foreach (var blob in blobs)
+
+    // Discover partition folders (e.g. "{iotHubName}/00/", "{iotHubName}/01/") without listing every blob
+    var partitionPrefixes = new List<string>();
+    await foreach (var item in containerClient.GetBlobsByHierarchyAsync(delimiter: "/", prefix: $"{iotHubName}/")) // returns virtual folders (partitions) 
+        if (item.IsPrefix)
+        {
+            partitionPrefixes.Add(item.Prefix); // adds unique folder paths (partitions) e.g. "{iotHubName}/00/", "{iotHubName}/01/"
+        }
+    }
+    Console.WriteLine($"Found {partitionPrefixes.Count} partition(s).");
+
+    var startDay = DateTime.SpecifyKind(lastRunTime.Date, DateTimeKind.Utc);
+    var endDay = DateTime.UtcNow.Date;
+
+    foreach (var partitionPrefix in partitionPrefixes)
     {
-        // var success = false;
-
-        if (blob.Name.EndsWith('/'))
+        for (var day = startDay; day <= endDay; day = day.AddDays(1))
         {
-            continue;
-        }
+            // Only list this one day's folder: {iotHubName}/{partition}/{yyyy}/{MM}/{dd}/
+            var dayPrefix = $"{partitionPrefix}{day:yyyy}/{day:MM}/{day:dd}/";
 
-        var blobTime = ExtractDateTimeFromPath(blob.Name, iotHubName);
-        if (blobTime == DateTime.MinValue)
-        {
-            Console.WriteLine($"Could not get date from: {blob.Name}");
-            errorCount++;
-            continue;
-        }
+            await foreach (var blob in containerClient.GetBlobsAsync(prefix: dayPrefix))
+            {
+                if (blob.Name.EndsWith('/'))
+                {
+                    continue;
+                }
 
-        // '<' not '<=': other partitions may still have unprocessed blobs in the checkpoint minute
-        if (blobTime < lastRunTime)
-        {
-            continue;
-        }
+                var blobTime = ExtractDateTimeFromPath(blob.Name, iotHubName);
+                if (blobTime == DateTime.MinValue)
+                {
+                    Console.WriteLine($"Could not get date from: {blob.Name}");
+                    errorCount++;
+                    continue;
+                }
 
-        pending.Add((blob.Name, blobTime));
+                // '<' not '<=': other partitions may still have unprocessed blobs in the checkpoint minute
+                if (blobTime < lastRunTime)
+                {
+                    continue;
+                }
+
+                pending.Add((blob.Name, blobTime));
+            }
+        }
     }
 
     pending = pending.OrderBy(b => b.Time).ThenBy(b => b.Name, StringComparer.Ordinal).ToList();
