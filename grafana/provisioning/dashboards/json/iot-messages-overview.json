@@ -103,13 +103,13 @@
     },
     {
       "id": 4,
-      "title": "Total messages per device per schema type",
+      "title": "Total messages per device per schema type ($device)",
       "type": "table",
       "gridPos": { "h": 11, "w": 24, "x": 0, "y": 18 },
       "datasource": { "type": "postgres", "uid": "timescaledb" },
       "targets": [
         {
-          "rawSql": "SELECT connection_device_id AS \"device\", iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time) GROUP BY 1, 2 ORDER BY 2 ASC, 1 ASC",
+          "rawSql": "SELECT connection_device_id AS \"device\", iothub_message_schema AS \"schema\", count(*) AS \"total_messages\" FROM iot_messages WHERE $__timeFilter(enqueued_time)  AND ('$device' = 'all' OR connection_device_id = '$device') GROUP BY 1, 2 ORDER BY 2 ASC, 1 ASC",
           "format": "table",
           "refId": "A"
         }
