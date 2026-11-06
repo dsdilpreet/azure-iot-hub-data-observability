@@ -12,6 +12,31 @@ services:
     volumes:
       - timescaledb_data:/var/lib/postgresql
       - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d observability']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  grafana:
+      image: grafana/grafana:latest
+      container_name: grafana
+      restart: unless-stopped
+      ports:
+        - '3000:3000'
+      environment:
+        GF_SECURITY_ADMIN_USER: admin
+        GF_SECURITY_ADMIN_PASSWORD: admin
+        POSTGRES_DB: observability
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: postgres
+      volumes:
+        - grafana_data:/var/lib/grafana
+        - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      depends_on:
+        timescaledb:
+          condition: service_healthy
 
 volumes:
   timescaledb_data:
+  grafana_data:
